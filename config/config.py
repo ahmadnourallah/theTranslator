@@ -1,0 +1,7 @@
+MainLanguage = 'English'
+Translator = 'Yandex'
+DefaultTranslateLanguage = 'Arabic'
+BackgroundColor = 'off'
+FontColor = 'off'
+FontType = 'Cantarell'
+FontSize = '14'

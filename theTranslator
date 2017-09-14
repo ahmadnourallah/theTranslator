@@ -1,0 +1,761 @@
+#!/usr/bin/python3
+import sys
+from getpass import getuser
+from subprocess import check_output,call
+from os.path import isdir
+# check config file
+if isdir('/home/{0}/.theTranslatorConfig'.format(getuser())):
+    pass
+else:
+    call('mkdir /home/{0}/.theTranslatorConfig'.format(getuser()),shell=True)
+    data = "MainLanguage = 'English'"
+    data += "\nTranslator = 'Yandex'"
+    data += "\nDefaultTranslateLanguage = 'Arabic'"
+    data += "\nBackgroundColor = 'off'"
+    data += "\nFontColor = 'off'"
+    data += "\nFontType = 'Cantarell'"
+    data += "\nFontSize = '14'"
+    with open('/home/{0}/.theTranslatorConfig/config.py'.format(getuser()),'w') as f:
+        f.write(data)
+sys.path.append('/home/{0}/.theTranslatorConfig/'.format(getuser()))
+from config import *
+import config
+sys.path.append('/usr/share/theTranslator/')
+from PyQt4.QtGui import *
+from PyQt4.QtCore import *
+from PyQt4.uic import *
+from urllib.request import urlopen, quote
+from urllib.error import URLError, HTTPError
+from threading import Thread
+from imp import reload
+from translateapi.translator import *
+from translateapi.supportLanguage import *
+from os import system, chdir
+chdir('/usr/share/theTranslator')
+with open('/home/{0}/.theTranslatorConfig/ProgramLanguage.py'.format(getuser()),'w') as f:
+    f.write("CurrentLanguage = '{0}'".format(MainLanguage))
+from widgets.settingsWidget import SettingsWidget
+from ProgramLanguage import CurrentLanguage
+
+class translateThread(QThread):
+    def __init__(self,text,language_code):
+        QThread.__init__(self)
+        self.text = text
+        self.language_code = language_code
+        self.translate_result_list = []
+    def run(self):
+        reload(config)
+        from config import Translator
+        if len(self.text) <= 0:
+            self.emit(SIGNAL('Translate'),'emptyText')
+        else:
+            try:
+                if Translator == "Google":
+                    self.translate_result = Googletranslate(self.text,self.language_code)
+                    self.emit(SIGNAL('Translate'),self.translate_result)
+                elif Translator == "Yandex":
+                    self.translate_result = Yandextranslate(self.text,self.language_code)
+                    self.emit(SIGNAL('Translate'),self.translate_result)
+            except URLError:
+                self.emit(SIGNAL('Translate'), 'exception')
+
+class pickFileThread(QThread):
+    def __init__(self,language_code,filename):
+        QThread.__init__(self)
+        self.language_code = language_code
+        self.filename = filename
+        self.text = ''
+    def run(self):
+        try:
+            with open(str(self.filename),'r') as f:
+                line = f.readlines()
+                if len(line) != 0:
+                    for i in line:
+                        self.text += i
+                    if Translator == "Google":
+                        result = Googletranslate(self.text,self.language_code)
+                        self.emit(SIGNAL('TranslateFile'),result)
+                    elif Translator == "Yandex":
+                        result = Yandextranslate(self.text,self.language_code)
+                        self.emit(SIGNAL('TranslateFile'),result)
+                    else:
+                        self.emit(SIGNAL('TranslateFile'),'noTranslator')
+                else:
+                    self.emit(SIGNAL('TranslateFile'),'emptyFile')
+
+        except URLError:
+            self.emit(SIGNAL('TranslateFile'), 'exception')
+
+        except FileNotFoundError:
+            self.emit(SIGNAL('TranslateFile'),'cancelClicked')
+            pass
+
+        except Exception:
+            self.emit(SIGNAL('TranslateFile'), 'exception')
+
+class upgradeCheck(QThread):
+    def __init__(self):
+        QThread.__init__(self)
+    def run(self):
+        try:
+            self.current_version = open('version.txt','r').read()
+            self.check_version = urlopen("https://raw.githubusercontent.com/ahmadnourallah/theTranslator/master/version.txt").read()
+            if float(self.check_version) > float(self.current_version):
+                self.emit(SIGNAL('Upgrade'),'oldVersion')
+            else:
+                self.emit(SIGNAL('Upgrade'),'latestVersion')
+        except Exception:
+            self.emit(SIGNAL('Upgrade'),'exception')
+
+class License(QWidget):
+    def __init__(self,parent=None):
+        super(License,self).__init__(parent)
+        loadUi('ui/license.ui',self)
+        self.setFixedSize(541,381)
+        self.textBrowser.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.textBrowser.customContextMenuRequested.connect(self.on_context_menu)
+        self.popmenu = QMenu(self)
+        self.actionCopy = QAction(Main().tr('Copy'),self)
+        self.actionCopy.setShortcut('Ctrl+C')
+        self.popmenu.addAction(self.actionCopy)
+        self.popmenu.addSeparator()
+        self.actionSelect_all = QAction(Main().tr('Select All'),self)
+        self.actionSelect_all.setShortcut('Ctrl+A')
+        self.popmenu.addAction(self.actionSelect_all)
+        #
+        self.actionCopy.triggered.connect(self.copy)
+        self.actionSelect_all.triggered.connect(self.selectAll)
+        #
+        with open('docs/LICENSE','r') as f:
+            line = f.read()
+            self.textBrowser.setText(self.tr(line))
+
+    def copy(self):
+        self.textBrowser.copy()
+
+    def selectAll(self):
+        self.textBrowser.selectAll()
+
+    def on_context_menu(self, point):
+        self.popmenu.exec_(self.textBrowser.mapToGlobal(point))
+
+class saveResult(QThread):
+    def __init__(self,fileName,translateResult,parent=None):
+        super(saveResult,self).__init__(parent)
+        self.fileName = fileName
+        self.translateResult = translateResult
+    def run(self):
+        try:
+            with open(self.fileName,'w') as f:
+                f.write(self.translateResult)
+        except FileNotFoundError:
+            pass
+
+class getMoreTranslation(QThread):
+    def __init__(self,from_language,to_language,text,parent=None):
+        super(getMoreTranslation,self).__init__(parent)
+        self.from_language = from_language
+        self.to_language = to_language
+        self.text = text
+
+    def run(self):
+        if len(self.text) == 0:
+            self.emit(SIGNAL('send'),'noOtherMeaning')
+        else:
+            try:
+                url = urlopen('https://glosbe.com/gapi/translate?from={0}&dest={1}&format=json&phrase={2}&pretty=true'.format(LanguageDetect(self.from_language),self.to_language,quote(self.text)))
+                data = json.loads(url.read().decode())
+                data = data['tuc']
+                meaningsList = []
+                for i in range(len(data)):
+                    try:
+                        meaningsList.append(data[i]['phrase']['text'])
+                    except KeyError:
+                        pass
+                if len(meaningsList) == 0:
+                    self.emit(SIGNAL('send'),'noOtherMeaning')
+                else:
+                    for meanings in meaningsList:
+                        self.emit(SIGNAL('send'),meanings)
+            except (HTTPError,IndexError):
+                self.emit(SIGNAL('send'),'noOtherMeaning')
+            except URLError:
+                self.emit(SIGNAL('send'),'internetException')
+
+class GetLanguage(QThread):
+    def __init__(self,text,parent=None):
+        super(GetLanguage,self).__init__(parent)
+        self.text = text
+
+    def run(self):
+        try:
+            isoCode = LanguageDetect(self.text)
+        except URLError:
+            self.emit(SIGNAL('sendLang'),'internetException')
+        except HTTPError:
+            self.emit(SIGNAL('sendLang'),'languageCannotDetect')
+        else:
+            for key, value in language_code.items():
+                if value == isoCode:
+                    language = key
+            self.emit(SIGNAL('sendLang'),language)
+
+class MoreTranslation(QDialog):
+    def __init__(self,from_language,to_language,text,parent=None):
+        super(MoreTranslation,self).__init__(parent)
+        loadUi('ui/moreTranslationWindow.ui',self)
+        self.setFixedSize(302,274)
+        self.textEdit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.textEdit.customContextMenuRequested.connect(self.on_context_menu)
+        self.popmenu = QMenu(self)
+        self.actionCopy = QAction(self.tr('Copy'),self)
+        self.actionCopy.setShortcut('Ctrl+C')
+        self.popmenu.addAction(self.actionCopy)
+        self.popmenu.addSeparator()
+        self.actionSelect_all = QAction(self.tr('Select All'),self)
+        self.actionSelect_all.setShortcut('Ctrl+A')
+        self.popmenu.addAction(self.actionSelect_all)
+        #
+        self.actionCopy.triggered.connect(self.copy)
+        self.actionSelect_all.triggered.connect(self.selectAll)
+        #
+        self.thread = getMoreTranslation(from_language= from_language,to_language = to_language,text = text)
+        self.connect(self.thread,SIGNAL('send'),self.getData)
+        self.thread.start()
+        self.movie = QMovie('icon/loading.gif', QByteArray(), self)
+        self.movieScreen.setMovie(self.movie)
+        self.movie.start()
+
+    def copy(self):
+        self.textEdit.copy()
+
+    def selectAll(self):
+        self.textEdit.selectAll()
+
+    def on_context_menu(self, point):
+        self.popmenu.exec_(self.textEdit.mapToGlobal(point))
+
+    def getData(self,text):
+        if text == 'internetException':
+            self.close()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr('Internet Error'))
+            messagebox.setText(self.tr('Please check your internet connection and try again'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == 'noOtherMeaning':
+            self.close()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr('Internet There are no other meanings'))
+            messagebox.setText(self.tr('There are no translations available'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        else:
+            self.movieScreen.hide()
+            self.textEdit.append(text)
+
+class LanguageDetector(QDialog):
+    def __init__(self,text,parent=None):
+        super(LanguageDetector,self).__init__(parent)
+        loadUi('ui/langDetect.ui',self)
+        self.setFixedSize(302,150)
+        self.textEdit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.textEdit.customContextMenuRequested.connect(self.on_context_menu)
+        self.popmenu = QMenu(self)
+        self.actionCopy = QAction(self.tr('Copy'),self)
+        self.actionCopy.setShortcut('Ctrl+C')
+        self.popmenu.addAction(self.actionCopy)
+        self.popmenu.addSeparator()
+        self.actionSelect_all = QAction(self.tr('Select All'),self)
+        self.actionSelect_all.setShortcut('Ctrl+A')
+        self.popmenu.addAction(self.actionSelect_all)
+        #
+        self.actionCopy.triggered.connect(self.copy)
+        self.actionSelect_all.triggered.connect(self.selectAll)
+        #
+        self.thread = GetLanguage(text = text)
+        self.connect(self.thread,SIGNAL('sendLang'),self.getLangData)
+        self.thread.start()
+        self.movie = QMovie('icon/loading.gif', QByteArray(), self)
+        self.movieScreen.setMovie(self.movie)
+        self.movie.start()
+
+    def copy(self):
+        self.textEdit.copy()
+
+    def selectAll(self):
+        self.textEdit.selectAll()
+
+    def on_context_menu(self, point):
+        self.popmenu.exec_(self.textEdit.mapToGlobal(point))
+
+    def getLangData(self,text):
+        if text == 'internetException':
+            self.close()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr('Internet Error'))
+            messagebox.setText(self.tr('Please check your internet connection and try again'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == 'languageCannotDetect':
+            self.close()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("The language it's unknown"))
+            messagebox.setText(self.tr('Check if text is right and try again'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        else:
+            self.movieScreen.hide()
+            self.textEdit.append(self.tr("Text Language: ") + text)
+
+class Main(QMainWindow):
+    escapeStatus = False
+    def __init__(self, parent=None):
+        super(Main,self).__init__(parent)
+        loadUi('ui/mainUi.ui',self)
+        self.setFixedSize(640,318)
+        self.setWindowTitle(self.tr('The Translator'))
+        self.screen = QDesktopWidget().screenGeometry()
+        self.mysize = self.geometry()
+        self.hpos = ( self.screen.width() - self.mysize.width() ) / 2
+        self.vpos = ( self.screen.height() - self.mysize.height() ) / 2
+        self.move(self.hpos, self.vpos)
+        #
+        self.programLanguage = QLabel()
+        self.translatorName = QLabel()
+        self.programLanguage.setStyleSheet("margin-left:100px;")
+        self.programLanguage.setText(self.tr('Program Language: ') + str(CurrentLanguage))
+        self.translatorName.setStyleSheet("margin-left:100px;")
+        self.statusbar.addWidget(self.programLanguage)
+        self.statusbar.addWidget(self.translatorName)
+        #
+        self.translateButton.setToolTip(self.tr('Translate text to ') + str(self.toLanguageSelect.currentText()))
+        self.toLanguageSelect.setToolTip(self.tr('Translate Language'))
+        self.textToTranslate.setToolTip(self.tr('Input text to translate it'))
+        self.resultDisplay.setToolTip(self.tr('Translate results'))
+        self.speakButton.setToolTip(self.tr('Say translate results'))
+        self.fieldReset.setToolTip(self.tr('Reset fields'))
+        self.resetResult.setToolTip(self.tr('Reset results box'))
+        self.uploadFile.setToolTip(self.tr('Translate file'))
+        self.moreTranslation.setToolTip(self.tr('Show more translations'))
+        self.autoTranslationCheckBox.setText(self.tr('Automatic translation'))
+        self.menuFile.setTitle(self.tr('File'))
+        self.menuHelp.setTitle(self.tr('Help'))
+        self.actionSaveResult.setText(self.tr('Save'))
+        self.actionSaveResult.setShortcut(Qt.CTRL+Qt.Key_S)
+        self.actionSettings.setText(self.tr('Settings'))
+        self.actionSettings.setShortcut(Qt.CTRL+Qt.Key_P)
+        self.actionExit.setText(self.tr('Exit'))
+        self.actionExit.setShortcut(Qt.CTRL+Qt.Key_W)
+        self.actionLicense.setText(self.tr('Licence'))
+        self.actionLicense.setShortcut(Qt.CTRL+Qt.Key_L)
+        self.actionUpgrade.setText(self.tr('Upgrade'))
+        self.actionUpgrade.setShortcut(Qt.CTRL+Qt.Key_U)
+        #
+        self.connect(self.translateButton,SIGNAL('clicked()'),self.translate_connect_thread)
+        self.speakButton.clicked.connect(self.say_translate)
+        self.fieldReset.clicked.connect(self.reset_field)
+        self.actionSettings.triggered.connect(self.open_settings)
+        self.actionExit.triggered.connect(self.close)
+        self.uploadFile.clicked.connect(self.pickFile_connect_thread)
+        self.toLanguageSelect.currentIndexChanged.connect(self.update_translate_language)
+        self.actionLicense.triggered.connect(self.license_show)
+        self.actionUpgrade.triggered.connect(self.checkUpgrade_connect_thread)
+        self.actionSaveResult.triggered.connect(self.saveResult_connect_thread)
+        self.resetResult.clicked.connect(self.reset_result)
+        self.moreTranslation.clicked.connect(self.showMoreTranslationWindow)
+        self.langDetectButton.clicked.connect(self.showLangDetectWindow)
+        self.textToTranslate.cursorPositionChanged.connect(self.autoTranslation)
+        #
+        self.textToTranslate.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.textToTranslate.customContextMenuRequested.connect(self.on_context_menu)
+        #
+        self.textFieldMenu = QMenu(self)
+        self.actionUndo = QAction(self.tr('Undo'), self)
+        self.actionUndo.setShortcut(Qt.CTRL+Qt.Key_Z)
+        self.textFieldMenu.addAction(self.actionUndo)
+        self.actionRedo = QAction(self.tr('Redo'), self)
+        self.actionRedo.setShortcut(Qt.CTRL+Qt.SHIFT+Qt.Key_Z)
+        self.textFieldMenu.addAction(self.actionRedo)
+        self.textFieldMenu.addSeparator()
+        self.actionCut = QAction(self.tr('Cut'), self)
+        self.actionCut.setShortcut(Qt.CTRL+Qt.Key_X)
+        self.textFieldMenu.addAction(self.actionCut)
+        self.actionCopy = QAction(self.tr('Copy'), self)
+        self.actionCopy.setShortcut(Qt.CTRL+Qt.Key_C)
+        self.textFieldMenu.addAction(self.actionCopy)
+        self.actionPaste = QAction(self.tr('Paste'), self)
+        self.actionPaste.setShortcut(Qt.CTRL+Qt.Key_V)
+        self.textFieldMenu.addAction(self.actionPaste)
+        self.actionDelete = QAction(self.tr('Delete'), self)
+        self.actionDelete.setShortcut(Qt.CTRL+Qt.Key_R)
+        self.textFieldMenu.addAction(self.actionDelete)
+        self.textFieldMenu.addSeparator()
+        self.actionSelect_all = QAction(self.tr('Select All'), self)
+        self.actionSelect_all.setShortcut(Qt.CTRL+Qt.Key_A)
+        self.textFieldMenu.addAction(self.actionSelect_all)
+        #
+        self.actionSelect_all.triggered.connect(self.selectAll)
+        self.actionUndo.triggered.connect(self.undo)
+        self.actionRedo.triggered.connect(self.redo)
+        self.actionCopy.triggered.connect(self.copy)
+        self.actionCut.triggered.connect(self.cut)
+        self.actionPaste.triggered.connect(self.paste)
+        self.actionDelete.triggered.connect(self.delete)
+        #
+        self.resultDisplay.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.resultDisplay.customContextMenuRequested.connect(self.on_context_menu2)
+        self.resultDisplayMenu = QMenu(self)
+        self.actionCopy = QAction(self.tr('Copy'),self)
+        self.actionCopy.setShortcut(Qt.CTRL+Qt.Key_C)
+        self.resultDisplayMenu.addAction(self.actionCopy)
+        self.resultDisplayMenu.addSeparator()
+        self.actionSelect_all = QAction(self.tr('Select All'),self)
+        self.actionSelect_all.setShortcut(Qt.CTRL+Qt.Key_A)
+        self.resultDisplayMenu.addAction(self.actionSelect_all)
+        self.actionCopy.triggered.connect(self.resultDisplayCopy)
+        self.actionSelect_all.triggered.connect(self.resultDisplaySelectAll)
+        self.movie = QMovie('icon/loading.gif', QByteArray(), self)
+        self.movieScreen.setMovie(self.movie)
+        #
+        if MainLanguage == 'Arabic':
+            self.setLayoutDirection(Qt.RightToLeft)
+            self.textToTranslate.setGeometry(332,50,301,201)
+            self.resultDisplay.setGeometry(10,50,301,201)
+            self.uploadFile.setGeometry(583,221,51,31)
+            self.translatorName.setStyleSheet('margin-left:100px;')
+            self.programLanguage.setStyleSheet('margin-left:150px;')
+            self.menubar.setLayoutDirection(Qt.RightToLeft)
+            self.menuFile.setLayoutDirection(Qt.RightToLeft)
+            self.menuHelp.setLayoutDirection(Qt.RightToLeft)
+            self.textFieldMenu.setLayoutDirection(Qt.RightToLeft)
+            self.resultDisplayMenu.setLayoutDirection(Qt.RightToLeft)
+            self.movieScreen.setGeometry(125,110,71,71)
+            self.uploadFile.setGeometry(333,221,51,31)
+            self.langDetectButton.setGeometry(390,221,51,31)
+            self.speakButton.setGeometry(12,13,32,28)
+            self.fieldReset.setGeometry(55,13,32,28)
+            self.translateButton.setGeometry(99,13,32,28)
+            self.toLanguageSelect.setGeometry(146,13,159,27)
+            self.resetResult.setGeometry(9,221,51,31)
+            self.moreTranslation.setGeometry(66,221,51,31)
+            self.uploadFile.setGeometry(331,221,51,31)
+            self.autoTranslationCheckBox.setGeometry(420,13,181,26)
+        else:
+            self.menubar.setLayoutDirection(Qt.LeftToRight)
+            self.setLayoutDirection(Qt.LeftToRight)
+            self.textToTranslate.setGeometry(10,50,301,201)
+            self.resultDisplay.setGeometry(332,50,301,201)
+            self.uploadFile.setGeometry(9,221,51,31)
+        #
+        self.speakButton.setShortcut(Qt.CTRL+Qt.Key_E)
+        self.fieldReset.setShortcut(Qt.CTRL+Qt.Key_R)
+        self.translateButton.setShortcut(Qt.CTRL+Qt.Key_T)
+        self.uploadFile.setShortcut(Qt.CTRL+Qt.Key_O)
+        self.resetResult.setShortcut(Qt.SHIFT+Qt.CTRL+Qt.Key_R)
+        self.moreTranslation.setShortcut(Qt.CTRL+Qt.Key_M)
+        #
+        self.update_config_file()
+        self.textToTranslate.installEventFilter(self)
+
+    def eventFilter(self, source, event):
+        if event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Backspace:
+                self.escapeStatus = True
+
+        return super(Main, self).eventFilter(source, event)
+
+    def showLangDetectWindow(self):
+        self.window = LanguageDetector(text = self.textToTranslate.toPlainText())
+        self.window.setWindowTitle(self.tr('Language Detect'))
+        self.window.setWindowFlags(self.window.windowFlags() | Qt.Window)
+        self.window.exec_()
+
+    def autoTranslation(self):
+        if self.autoTranslationCheckBox.isChecked():
+            if len(self.textToTranslate.toPlainText()) <= 0:
+                pass
+            else:
+                self.movieScreen.show()
+                self.movie.start()
+                self.thread = translateThread(self.textToTranslate.toPlainText(),language_code[self.toLanguageSelect.currentText()])
+                self.connect(self.thread,SIGNAL('Translate'),self.translate_input)
+                if self.escapeStatus == True:
+                    pass
+                else:
+                    self.thread.start()
+        else:
+            pass
+        self.escapeStatus = False
+        try:
+            self.thread.quit()
+        except Exception:
+            pass
+
+    def resultDisplayCopy(self):
+        self.resultDisplay.copy()
+
+    def resultDisplaySelectAll(self):
+        self.resultDisplay.selectAll()
+
+    def delete(self):
+        self.textToTranslate.clear()
+
+    def paste(self):
+        self.textToTranslate.paste()
+
+    def cut(self):
+        self.textToTranslate.cut()
+
+    def copy(self):
+        self.textToTranslate.copy()
+
+    def undo(self):
+        self.textToTranslate.undo()
+
+    def redo(self):
+        self.textToTranslate.redo()
+
+    def selectAll(self,name):
+        self.textToTranslate.selectAll()
+
+    def on_context_menu(self, point):
+        self.textFieldMenu.exec_(self.textToTranslate.mapToGlobal(point))
+
+    def on_context_menu2(self, point):
+        self.resultDisplayMenu.exec_(self.resultDisplay.mapToGlobal(point))
+
+    def showMoreTranslationWindow(self):
+        self.window = MoreTranslation(from_language = self.textToTranslate.toPlainText(),to_language = language_code[self.toLanguageSelect.currentText()],text = self.textToTranslate.toPlainText())
+        self.window.setWindowTitle(self.tr("More Translations"))
+        self.window.exec_()
+
+    def reset_result(self):
+        self.resultDisplay.setText('')
+
+    def saveResult_connect_thread(self):
+        self.fileName = QFileDialog.getSaveFileName(self, 'Save File')
+        self.saveResultThread = saveResult(fileName = self.fileName, translateResult = self.resultDisplay.toPlainText())
+        self.saveResultThread.start()
+
+    def pickFile_connect_thread(self):
+        self.movieScreen.show()
+        self.movie.start()
+        self.filename = QFileDialog.getOpenFileName(Main(), 'Open File','file','text files (*.txt)')
+        self.thread = pickFileThread(language_code[self.toLanguageSelect.currentText()],self.filename)
+        self.connect(self.thread,SIGNAL('TranslateFile'),self.pick_file)
+        self.thread.start()
+
+    def checkUpgrade_connect_thread(self):
+        self.thread = upgradeCheck()
+        self.connect(self.thread,SIGNAL('Upgrade'),self.check_upgrade)
+        self.thread.start()
+
+    def check_upgrade(self,text):
+        if text == 'exception':
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("Internet Error"))
+            messagebox.setText(self.tr('Please check your internet connection and try again'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == "oldVersion":
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Information)
+            messagebox.setWindowTitle(self.tr("Version Checked"))
+            messagebox.setText(self.tr('Upgrade available go to program page on github to download it'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == "latestVersion":
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Information)
+            messagebox.setWindowTitle(self.tr("Version Checked"))
+            messagebox.setText(self.tr('You have the latest version'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+    def translate_connect_thread(self):
+        self.movieScreen.show()
+        self.movie.start()
+        self.thread = translateThread(self.textToTranslate.toPlainText(),language_code[self.toLanguageSelect.currentText()])
+        self.connect(self.thread,SIGNAL('Translate'),self.translate_input)
+        self.thread.start()
+
+    def close(self):
+        QCoreApplication.instance().quit()
+
+    def say_translate(self):
+        if len(self.resultDisplay.toPlainText()) <= 0:
+            pass
+        else:
+            if language_code[self.toLanguageSelect.currentText()] not in speechLanguageSupport:
+                messagebox = QMessageBox(self)
+                messagebox.setIcon(QMessageBox.Warning)
+                messagebox.setWindowTitle(self.tr("Language not supported"))
+                messagebox.setText(self.tr('Unfortunately the language you are trying to read does not supported'))
+                messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+                messagebox.exec_()
+
+            else:
+                try:
+                    check_output('spd-say {} &> /dev/null'.format(self.resultDisplay.toPlainText()), shell=True)
+                except Exception:
+                    QMessageBox.warning(self,self.tr("Package is missing"),self.tr("Check if spd-say package is available"))
+
+    def license_show(self):
+        self.window = License(self)
+        self.window.setWindowTitle(self.tr('License'))
+        self.window.setWindowFlags(self.window.windowFlags() | Qt.Window)
+        self.window.show()
+
+    def update_translate_language(self):
+        self.translateButton.setToolTip(self.tr('Translate text to ') + str(self.toLanguageSelect.currentText()))
+
+    def translate_input(self,text):
+        if text == 'exception':
+            self.movieScreen.hide()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("Internet Error"))
+            messagebox.setText(self.tr('Please check your internet connection and try again'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == 'emptyText':
+            self.movieScreen.hide()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("No String To Translate"))
+            messagebox.setText(self.tr('Please insert text to translate it'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        else:
+            self.movieScreen.hide()
+            self.resultDisplay.setText(text)
+
+    def update_config_file(self):
+        reload(config)
+        from config import MainLanguage, Translator, DefaultTranslateLanguage, BackgroundColor, FontType, FontColor, FontSize
+        if Translator == 'Yandex':
+            self.toLanguageSelect.clear()
+            for i in YandexSupportLanguage:
+                self.toLanguageSelect.addItem(i)
+        elif Translator == "Google":
+            self.toLanguageSelect.clear()
+            for i in sorted(language_code.keys()):
+                self.toLanguageSelect.addItem(i)
+        self.targetPosition = self.toLanguageSelect.findText(str(DefaultTranslateLanguage))
+        self.toLanguageSelect.setCurrentIndex(self.targetPosition)
+        self.translatorName.setText(self.tr("Translator: ") + str(Translator))
+        if BackgroundColor == 'off':
+            pass
+        else:
+            self.setStyleSheet('QMainWindow{background-color: ' + BackgroundColor + ';}')
+        if FontType == 'off':
+            pass
+        else:
+            style = "QTextEdit{border: 1px solid rgb(239,239,239); padding-bottom: 35px;" + " font-family: " + FontType + "; color: " + FontColor + "; font-size: " + FontSize + "px;}"
+            style += "QTextEdit:focus {border: 1px solid rgb(77,144,254);}"
+            self.textToTranslate.setStyleSheet(style)
+        if FontColor == 'off':
+            pass
+        else:
+            style = "QTextEdit{border: 1px solid rgb(239,239,239); padding-bottom: 35px;" + " font-family: " + FontType + "; color: " + FontColor + "; font-size: " + FontSize + "px;}"
+            style += "QTextEdit:focus {border: 1px solid rgb(77,144,254);}"
+            self.textToTranslate.setStyleSheet(style)
+        self.resultDisplay.setStyleSheet('QTextEdit {background-color:rgb(239,239,239); border:1px solid transparent; padding-bottom: 35px; font-size: ' + FontSize + 'px;}')
+
+    def open_settings(self):
+        reload(config)
+        from config import MainLanguage
+        self.previousLanguage = MainLanguage
+        dialog = SettingsWidget(self)
+        dialog.setWindowTitle(self.tr('Preferences'))
+        dialog.label4.setText(self.tr('Background color:'))
+        dialog.label1.setText(self.tr('Program Language:'))
+        dialog.label2.setText(self.tr('Translator:'))
+        dialog.label3.setText(self.tr("Default Translate Language:"))
+        dialog.label4.setText(self.tr('Background color:'))
+        dialog.label5.setText(self.tr('Font Type:'))
+        dialog.label6.setText(self.tr('Font Color:'))
+        dialog.fontSizeLabel.setText(self.tr('Font Size:'))
+        dialog.pushButton.setText(self.tr('Browse'))
+        dialog.pushButton2.setText(self.tr('Browse'))
+        dialog.saveButton.setText(self.tr('Save'))
+        dialog.cancelButton.setText(self.tr('Cancel'))
+        dialog.tabWidget.setTabText(0,self.tr('Languages'))
+        dialog.tabWidget.setTabText(1,self.tr('Style'))
+        dialog.exec_()
+        reload(config)
+        from config import MainLanguage
+        self.currentLanguage = MainLanguage
+        self.update_config_file()
+        if self.previousLanguage != self.currentLanguage:
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Information)
+            messagebox.setWindowTitle(self.tr("Language Changed"))
+            messagebox.setText(self.tr('Please reset the application to change language'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+    def reset_field(self):
+        self.resultDisplay.clear()
+        self.textToTranslate.clear()
+
+    def pick_file(self,text):
+        if text == "noTranslator":
+            self.movieScreen.hide()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("Check Your Config File"))
+            messagebox.setText(self.tr('The config file has unknown translator name'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == "emptyFile":
+            self.movieScreen.hide()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("No String To Translate"))
+            messagebox.setText(self.tr('The file is empty!!'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == 'exception':
+            self.movieScreen.hide()
+            messagebox = QMessageBox(self)
+            messagebox.setIcon(QMessageBox.Warning)
+            messagebox.setWindowTitle(self.tr("Internet Error"))
+            messagebox.setText(self.tr('Please check your internet connection and try again'))
+            messagebox.addButton(QPushButton(self.tr('Cancel')), QMessageBox.NoRole)
+            messagebox.exec_()
+
+        elif text == 'cancelClicked':
+            self.movieScreen.hide()
+
+        else:
+            self.movieScreen.hide()
+            self.resultDisplay.append(text)
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    translator = QTranslator()
+    translator.load('translate/{0}.qm'.format(MainLanguage))
+    app.installTranslator(translator)
+    windows = Main()
+    windows.show()
+    try:
+        sys.exit(app.exec_())
+    except KeyboardInterrupt:
+        pass

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=The Translator
+Name[ar]=المترجم
+Comment=Translate your text with many another futures with this modern translator
+Comment[ar]=ترجم نصوصك مع العديد من المميزات الاخرى باستخدام هذه المترجم الرائع
+Icon=translate_icon.png
+Exec=theTranslator
+Terminal=false
+Type=Application
+StartupNotify=false
