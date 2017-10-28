@@ -1,5 +1,7 @@
 # The Translator
 Translate your text with many amazing features 
+# What it is ?
+It's a texts translator using a online translators like google translator and yandex with user-friendly UI. 
 # Features
 * Simple and lightweight
 * Easy to use
